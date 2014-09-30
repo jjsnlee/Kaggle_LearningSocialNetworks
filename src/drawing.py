@@ -54,7 +54,9 @@ def plotGMM(X_train, y_train,
     n_classes = len(np.unique(y_train))
     classifiers = dict((covar_type, 
                         mixture.GMM(n_components=n_classes,
-                                    covariance_type=covar_type, init_params='wc', n_iter=20))
+                                    covariance_type=covar_type, 
+                                    init_params='wc', 
+                                    n_iter=20))
                        for covar_type in ['spherical', 'diag', 'tied', 'full'])
     n_classifiers = len(classifiers)
 
@@ -115,22 +117,8 @@ def plotGMM(X_train, y_train,
     plt.legend(loc='lower right', prop=dict(size=12))
     plt.show()
 
-# def make_ellipses(gmm, ax, lbl_clrs):
-#     #for n, color in enumerate('rgb'):
-#     for n, color in enumerate(lbl_clrs):
-#         v, w = np.linalg.eigh(gmm._get_covars()[n][:2, :2])
-#         u = w[0] / np.linalg.norm(w[0])
-#         print 'After normalization...'
-#         angle = np.arctan2(u[1], u[0])
-#         angle = 180 * angle / np.pi  # convert to degrees
-#         v *= 9
-#         ell = mpl.patches.Ellipse(gmm.means_[n, :2], v[0], v[1],
-#                                   180 + angle, color=color)
-#         ell.set_clip_box(ax.bbox)
-#         ell.set_alpha(0.5)
-#         ax.add_artist(ell)
-
 def make_ellipse(ax, covars, means, color):
+    # v - eigenvectors, w - eigenvalues
     v, w = np.linalg.eigh(covars)
     u = w[0] / np.linalg.norm(w[0])
     print 'After normalization...'
@@ -167,16 +155,16 @@ def plotGMM2(gmm, X):
             continue
         plt.scatter(X[Y_ == i, 0], X[Y_ == i, 1], .8, color=color)
         
-#         make_ellipses(gmm, splot, color_iter)
-        v,w = linalg.eigh(covar)
-        u = w[0] / linalg.norm(w[0])
-        # Plot an ellipse to show the Gaussian component
-        angle = np.arctan(u[1] / u[0])
-        angle = 180 * angle / np.pi  # convert to degrees
-        ell = mpl.patches.Ellipse(mean, v[0], v[1], 180 + angle, color=color)
-        ell.set_clip_box(splot.bbox)
-        ell.set_alpha(0.5)
-        splot.add_artist(ell)
+        make_ellipse(splot, covar, mean, color)
+#         v,w = linalg.eigh(covar)
+#         u = w[0] / linalg.norm(w[0])
+#         # Plot an ellipse to show the Gaussian component
+#         angle = np.arctan(u[1] / u[0])
+#         angle = 180 * angle / np.pi  # convert to degrees
+#         ell = mpl.patches.Ellipse(mean, v[0], v[1], 180 + angle, color=color)
+#         ell.set_clip_box(splot.bbox)
+#         ell.set_alpha(0.5)
+#         splot.add_artist(ell)
  
     #plt.xlim(-10, 10)
     #plt.ylim(-3, 6)
