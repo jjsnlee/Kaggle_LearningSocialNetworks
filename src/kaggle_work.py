@@ -4,7 +4,9 @@ import pandas as pd
 #import sys
 #import drawing
 import numpy as np
-from os.path import join
+from os import listdir
+from os.path import isfile, join
+import matplotlib.pyplot as plt
 import itertools
 
 def read_nodeadjlist(filename):
@@ -34,10 +36,11 @@ def training_features(filename='../features.txt'):
         _featuremap = ppls
     return _featuremap
 
-def train(ego_ds, covar_type='diag'):
+def train1(ego_ds, covar_type='diag'):
     from sklearn import mixture
     
-    n_components = len(ego_ds.labels)
+    labels = ego_ds.labels
+    n_components = len(labels)
     
     g = mixture.GMM(n_components=n_components, init_params='wc', covariance_type=covar_type)
     samples = ego_ds.M
@@ -47,7 +50,87 @@ def train(ego_ds, covar_type='diag'):
     g.means_ = np.array([samples[targets&lbl].mean(axis=0) for lbl in lbl_keys])
     
     g.fit(samples)
+    
+    # Need to cover these to the correct bit format!
+    def xform(i):
+        return ego_ds.label_keys[ego_ds.labels[i]]
+    preds = [xform(p) for p in g.predict(samples)]
+    print 'preds:', preds
+    train_accuracy = np.mean(preds==targets)*100
+    print 'train_accuracy: %.1f%%' % train_accuracy
+    
     return g
+
+def train(ds, samples=None, covar_type='diag', include_model=False, method='gmm'):
+    from sklearn import feature_selection 
+    
+    labels = ds.labels
+    targets = ds.friend_targets
+    if samples is None:
+        samples = ds.M
+
+    # for testing remove ones which don't belong to a circle...
+#     labels = labels[1:]
+#     samples = samples[targets>0]
+#     targets = targets[targets>0]
+#     print 'labels:', labels
+#     print 'samples.shape:', samples.shape, 'targets.shape:', targets.shape
+
+    n_components = len(labels)
+
+    rslts = {}
+
+    #sel = feature_selection.VarianceThreshold(threshold=(.8 * (1 - .8)))
+    # If I remove the ones with zero variance it still gets to the same answer
+    sel = feature_selection.VarianceThreshold()
+    sel.fit_transform(samples)
+    samples = samples[samples.columns[sel.get_support()]]
+    print 'samples:', samples.shape
+    
+    try:
+        if method=='gmm':
+            from sklearn import mixture
+            model = mixture.GMM(n_components=n_components, init_params='wc', 
+                            #n_iter=500,
+                            #n_init=n_init, # doesn't make sense to set if we are setting the means
+                            covariance_type=covar_type)
+            model.means_ = np.array([samples[targets==i].mean(axis=0) for i in xrange(len(labels))])
+            model.fit(samples)
+        elif method=='LR':
+            from sklearn import linear_model, decomposition
+            from sklearn.pipeline import Pipeline
+            from sklearn.grid_search import GridSearchCV
+            logistic = linear_model.LogisticRegression()
+            pca = decomposition.PCA()
+            pipe = Pipeline(steps=[('pca', pca), ('logistic', logistic)])
+            estimator = GridSearchCV(pipe, {}
+                                     #dict(pca__n_components=n_components, logistic__C=Cs)
+                                     )
+            estimator.fit(samples, targets)
+            model = estimator
+            
+        # Need to cover these to the correct bit format!
+        preds = model.predict(samples)
+        #print 'preds:', preds
+        train_accuracy = np.mean(preds==targets)*100
+        print 'train_accuracy: %.1f%%' % train_accuracy
+        #return g
+    except Exception as e:
+        import traceback
+        st = traceback.format_exc()
+        print 'Problem parsing [%s]:\n%s' % (ds.ego, st)        
+        preds = model = train_accuracy = None
+    
+    rslts['n_samples'] = len(samples.index)
+    rslts['n_components'] = n_components
+    rslts['non_trivial_features'] = samples.columns
+    rslts['n_non_trivial_features'] = len(samples.columns)
+    rslts['train_accuracy'] = train_accuracy
+    if include_model:
+        rslts['model'] = model
+        rslts['preds'] = preds
+    
+    return rslts
 
 def trainKM(EgoDS, n_components=2, covar_type='diag'):
     from sklearn import cluster
@@ -63,53 +146,19 @@ class EgoDataSet():
         featuremap = training_features()
         print 'loaded features...'        
         self.G = G
-        circles = training_circles(ego)
         
-        #assert by in ('node', 'edge')
-        assert by in ('edge')
+        assert by in ('node', 'edge')
+        #assert by in ('edge')
         if by == 'node':
-            M = create_features_by_node(ego, G, featuremap)
+            M, circles = create_features_by_node(ego, G, featuremap)
         elif by == 'edge':
-            M = create_features_by_edge(ego, G, featuremap)
-            all_friends = set(M.index)
-            _circles = {}
-            # need to check pairwise to see if there are any edges
-            for c, friends in circles.iteritems():
-                for f1 in friends:
-                    egokey = 'EGO_%s'%(f1)
-                    _circles[egokey] = c
-                    f1_matched = False
-                    for f2 in friends:
-                        if f1==f2:
-                            continue
-                        matched_key = None
-                        key_ = '%s_%s'%(f1,f2)
-                        if key_ in all_friends: 
-                            matched_key = key_
-                        else:
-                            key_ = '%s_%s'%(f2,f1)
-                            if key_ in all_friends:
-                                matched_key = key_
-                        if matched_key:
-                            if matched_key in _circles and _circles[matched_key]!=c:
-                                if not isinstance(_circles[matched_key], set):
-                                    _circles[matched_key] = set([_circles[matched_key]])
-                                _circles[matched_key].add(c)
-                            else:
-                                _circles[matched_key] = c
-                            f1_matched = True
-                    if not f1_matched:
-                        print 'No mutual cnxs for', f1
-            matched_keys = set(_circles.keys())
-            
-            # A circle for those not in any circles...
-            unmatched = dict.fromkeys(list(all_friends.difference(matched_keys)), '__NO_CIRCLE__')
-            _circles.update(unmatched)
-            circles = _circles
+            M, circles = create_features_by_edge(ego, G, featuremap)
+        print 'generated features...'
         
         self.circles = circles
 
         labels = set()
+        labels.add(None)
         for v in circles.values():
             if isinstance(v, set):
                 labels.update(v)
@@ -122,22 +171,21 @@ class EgoDataSet():
         self.M = M
         self.friends = M.index
         
-        lbl_keys = dict([(l,2**i) for i,l in enumerate(labels)])
+        #lbl_keys = dict([(l,2**i) for i,l in enumerate(labels)])
+        lbl_keys = dict([(l,i) for i,l in enumerate(labels)])
         def score(i):
-            lbl = circles[i]
+            lbl = circles.get(i)
             if isinstance(lbl, set):
-                return sum([lbl_keys[l] for l in lbl])
+                # arbitrarily take the first one for now
+                return lbl_keys[list(lbl)[0]]
+                #return sum([lbl_keys[l] for l in lbl])
             return lbl_keys[lbl]
-        
+
         self.label_keys = lbl_keys
         self.labels = labels
-        self.friend_targets = pd.Series([score(i) for i in M.index], index=M.index)
         
-        #self.friend_features = None
-        #df = pd.DataFrame(featuremap)
-        #all_persons = df.columns 
-        #features = df.index
-        #ego_features = featuremap[ego]
+        self.friend_targets = pd.Series([score(i) for i in M.index], index=M.index)
+        #self.friend_targets = pd.Series([ for i in M.index], index=M.index)
     
     @property
     def sample_labels(self):
@@ -145,34 +193,6 @@ class EgoDataSet():
     @property
     def samples(self):
         return self.friends
-
-def main(ego, by='node'):
-    ds = EgoDataSet(ego, by=by)
-    return ds
-
-def training_circles(ego):
-    fname = join('../Data/Training', str(ego)+'.circles')
-    circles = {}
-    for line in open(fname):
-        e1, es = line.split(':')
-        friends = es.strip().split(' ')
-        circles[e1] = friends
-        #circles.update(dict([(f, e1) for f in friends]))
-    return circles
-
-def create_features_by_node(ego, G, featuremap):
-    ego_friends = G.nodes()
-    m = {}
-    for friend in ego_friends:
-        fr_m = featuremap[friend]
-        row = {}
-        for k,v in fr_m.iteritems():
-            keyval = '%s=%s'%(k, v)
-            row[keyval] = 1
-        m[friend] = row
-    M = pd.DataFrame(m)
-    M.fillna(0, inplace=True)
-    return M.T
 
 def create_features_by_edge(ego, G, featuremap):
     """
@@ -186,11 +206,14 @@ def create_features_by_edge(ego, G, featuremap):
         keys.update(m2.keys())
         for k in keys:
             try:
-                #row['same_'+k] = p1_m[k]==p2_m[k]
+                # Need to explicitly make this 0/1
                 if m1[k]==m2[k]:
-                    row['same_'+k] = 1
-                else:
-                    row['same_'+k] = -1
+                    row['%s=%s'%(k, m1[k])] = 1
+                #row['same_'+k] = 1 if m1[k]==m2[k] else 0
+#                 if m1[k]==m2[k]:
+#                     row['same_'+k] = 1
+#                 else:
+#                     row['same_'+k] = -1
             except:
                 pass
         return row
@@ -210,7 +233,176 @@ def create_features_by_edge(ego, G, featuremap):
 
     M = pd.DataFrame(m)
     M.fillna(0, inplace=True)
-    return M.T
+    M = M.T
+
+    circles = training_circles(ego)
+    all_friends_edges = set(M.index)
+
+    _circles = {}
+    for f_edge in all_friends_edges:
+        f1,f2 = f_edge.split('_') 
+        f1c = circles.get(f1)
+        f2c = circles.get(f2)
+        if f1c==f2c or f1=='EGO':
+            _circles[f_edge] = f2c 
+    return M, _circles
+    
+    # need to check pairwise to see if there are any edges
+#     for c, friends in circles.iteritems():
+#         for f1 in friends:
+#             egokey = 'EGO_%s'%(f1)
+#             _circles[egokey] = c
+#             f1_matched = False
+#             for f2 in friends:
+#                 if f1==f2:
+#                     continue
+#                 matched_key = None
+#                 key_ = '%s_%s'%(f1,f2)
+#                 if key_ in all_friends: 
+#                     matched_key = key_
+# #                         else:
+# #                             key_ = '%s_%s'%(f2,f1)
+# #                             if key_ in all_friends:
+# #                                 matched_key = key_
+# #                         if matched_key:
+#                     # This is only to support users being in more than one circle
+#                     if matched_key in _circles and _circles[matched_key]!=c:
+#                         if not isinstance(_circles[matched_key], set):
+#                             _circles[matched_key] = set([_circles[matched_key]])
+#                         _circles[matched_key].add(c)
+#                     else:
+#                         _circles[matched_key] = c
+#                     f1_matched = True
+#             if not f1_matched:
+#                 print 'No mutual cnxs for', f1
+    #matched_keys = set(_circles.keys())
+    # A circle for those not in any circles...
+    #unmatched = dict.fromkeys(list(all_friends_edges.difference(matched_keys)), '__NO_CIRCLE__')
+    #_circles.update(unmatched)
+    #circles = _circles
+
+def create_features_by_node(ego, G, featuremap):
+    ego_friends = G.nodes()
+    m = {}
+    for friend in ego_friends:
+        fr_m = featuremap[friend]
+        row = {}
+        for k,v in fr_m.iteritems():
+            keyval = '%s=%s'%(k, v)
+            row[keyval] = 1
+        m[friend] = row
+    M = pd.DataFrame(m)
+    M.fillna(0, inplace=True)
+    M = M.T
+    
+    circles = training_circles(ego)
+
+    # A circle for those not in any circles...    
+    all_friends = set(M.index)
+    matched_keys = set(circles.keys())
+    unmatched = dict.fromkeys(list(all_friends.difference(matched_keys)), '__NO_CIRCLE__')
+    circles.update(unmatched)        
+    
+    return M, circles
+
+TRAINING_DIR = '../Data/Training'
+
+def main():
+    print 'Starting:', get_ts()
+    rslts = {}
+    egocircles = [int(f.replace('.circles', '')) for f in listdir(TRAINING_DIR) if f.endswith('.circles')]
+    print '# egocircles:', len(egocircles)
+    for ego in egocircles:
+        print '-'*80
+        print 'Executing for', ego
+        ds = EgoDataSet(ego, by='edge')
+        print 'Initialized ego'
+        rslts[ego] = train(ds)
+
+    print 'Done:', get_ts()
+    return rslts
+
+def training_circles(ego):
+    fname = join(TRAINING_DIR, str(ego)+'.circles')
+    _circles = {}
+    for line in open(fname):
+        circle, _friends = line.split(':')
+        friends = _friends.strip().split(' ')
+        _circles[circle] = friends
+        #circles.update(dict([(f, e1) for f in friends]))
+    circles = {}
+    for c, vals in _circles.iteritems():
+        circles.update(dict([(v,c) for v in vals]))
+    return circles
+
+def draw_results_graph(ego_ds, model):
+    samples = ego_ds.M
+    preds = model.predict(ego_ds.M)
+    G = ego_ds.G.copy()
+    
+    #plt.title(str())
+    plt.xticks([])
+    plt.yticks([])
+    
+    train_accuracy = np.mean(preds==ego_ds.friend_targets)*100
+    print 'train_accuracy: %.1f%%' % train_accuracy
+    
+    lbl_clrs = itertools.cycle(['w', 'r', 'g', 'b', 'c', 'm'])
+    
+    predvals = pd.Series(preds).unique()
+    predvals.sort()
+    
+    pos = nx.spring_layout(G)
+    #pos = nx.circular_layout(G)
+    #pos = nx.shell_layout(G)
+    #pos = nx.spectral_layout(G)
+
+    for lblidx, clr in zip(predvals, lbl_clrs):
+        
+        lbl = ego_ds.labels[lblidx]
+        
+        edges = samples.index[preds==lblidx]
+        
+        print 'lblidx:', lblidx, lbl, len(edges)
+        if lbl=='__NO_CIRCLE__':
+            lbl = 'No Circle'
+        
+        _nodes = set()
+        #_edges = []
+        for e in edges:
+            n1,n2 = e.split('_')
+            n2=int(n2)
+            _nodes.add(n2)
+
+            if n1!='EGO':
+                n1=int(n1)
+                #_edges.append((n1,n2))
+                _nodes.add(n1)
+        
+        nx.draw_networkx_edges(G, pos, edge_color=clr, width=1, alpha=0.5)
+        #nx.draw_networkx_edges(G, pos, edgelist=_edges, edge_color=clr, width=1, alpha=0.5)
+        nx.draw_networkx_nodes(G, pos, nodelist=_nodes, node_color=clr, width=1, alpha=0.5, label=lbl)
+        
+    #nx.draw_networkx_labels(G, pos_lbls, alpha=0.5)
+    nx.draw_networkx_labels(G, pos, alpha=0.5)
+    
+    plt.legend()
+    plt.show()    
+
+def create_dumb_data(ego_ds):
+    """OK this works perfectly, as expected..."""
+    X = {}
+    features = ego_ds.M.columns
+    for idx in ego_ds.samples:
+        target = ego_ds.friend_targets[idx]
+        X[idx] = dict([(f, target) for f in features])
+    return pd.DataFrame(X).T
+
+from datetime import datetime
+import time
+def get_ts():
+    ts = time.time()
+    return datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
     
 def mean_nozero(M):
     return np.mean([len(M.ix[i].nonzero()[0]) for i in M.index])    
