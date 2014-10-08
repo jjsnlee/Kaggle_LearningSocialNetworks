@@ -6,13 +6,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 def draw_graph(title, G):
-    """
-    Draw the graph, the node size will be based on the number of lines squared 
-    the character spoke in that scene, indicating their dominance/activity.
-    
-    The strength of the edges are based on the 
-    """
-    
+   
     #print 'json repr:', node_link_data(G)
     #if logger.isEnabledFor(logging.DEBUG):
     #print 'nlines: %s', [(n, G.node[n]['nlines']) for n in G]
@@ -172,3 +166,59 @@ def plotGMM2(gmm, X):
     plt.yticks(())
     #plt.title(title)
     plt.show()
+
+
+def draw_results_graph(ego_ds, model):
+    samples = ego_ds.M
+    preds = model.predict(ego_ds.M)
+    G = ego_ds.G.copy()
+    
+    #plt.title(str())
+    plt.xticks([])
+    plt.yticks([])
+    
+    train_accuracy = np.mean(preds==ego_ds.friend_targets)*100
+    print 'train_accuracy: %.1f%%' % train_accuracy
+    
+    lbl_clrs = itertools.cycle(['w', 'r', 'g', 'b', 'c', 'm'])
+    
+    predvals = pd.Series(preds).unique()
+    predvals.sort()
+    
+    pos = nx.spring_layout(G)
+    #pos = nx.circular_layout(G)
+    #pos = nx.shell_layout(G)
+    #pos = nx.spectral_layout(G)
+
+    for lblidx, clr in zip(predvals, lbl_clrs):
+        
+        lbl = ego_ds.labels[lblidx]
+        
+        edges = samples.index[preds==lblidx]
+        
+        print 'lblidx:', lblidx, lbl, len(edges)
+        if lbl=='__NO_CIRCLE__':
+            lbl = 'No Circle'
+        
+        _nodes = set()
+        #_edges = []
+        for e in edges:
+            n1,n2 = e.split('_')
+            n2=int(n2)
+            _nodes.add(n2)
+
+            if n1!='EGO':
+                n1=int(n1)
+                #_edges.append((n1,n2))
+                _nodes.add(n1)
+        
+        nx.draw_networkx_edges(G, pos, edge_color=clr, width=1, alpha=0.5)
+        #nx.draw_networkx_edges(G, pos, edgelist=_edges, edge_color=clr, width=1, alpha=0.5)
+        nx.draw_networkx_nodes(G, pos, nodelist=_nodes, node_color=clr, width=1, alpha=0.5, label=lbl)
+        
+    #nx.draw_networkx_labels(G, pos_lbls, alpha=0.5)
+    nx.draw_networkx_labels(G, pos, alpha=0.5)
+    
+    plt.legend()
+    plt.show()    
+

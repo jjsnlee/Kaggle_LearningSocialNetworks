@@ -4,21 +4,7 @@ import pandas as pd
 #import sys
 #import drawing
 import numpy as np
-from os.path import join
-import matplotlib.pyplot as plt
-import itertools
-from kaggle_data import training_features, training_circles
-
-def read_nodeadjlist(filename):
-    G = nx.Graph()
-    for line in open(filename):
-        e1, es = line.split(':')
-        es = es.split()
-        for e in es:
-            if e == e1: continue
-            #print e1, e
-            G.add_edge(int(e1),int(e))
-    return G
+from kaggle_data import training_features, training_circles, get_ego_cliques, load_ego_graph
 
 def train1(ego_ds, covar_type='diag'):
     from sklearn import mixture
@@ -116,12 +102,13 @@ def train(ds, samples=None, covar_type='diag', include_model=False, method='gmm'
     # Ultimately the real evaluation needs to be how these map to the actual circles
     # So should do some conversion, and use that for the ultimate accuracy
     
-#     circle_rslts = {}
-#     for pred in preds.unique():
-#         samples_with_pred = samples.index[preds==pred]
-#         if pred > 0:
-#             circle_rslts[pred] = set(samples_with_pred)
-    
+    circle_rslts = {}
+    for pred in np.unique(preds.unique()):
+        samples_with_pred = samples.index[preds==pred]
+        if pred > 0:
+            circle_rslts[pred] = set(samples_with_pred)
+    rslts['predicted'] = ';'.join(['%s' % (circle, ' '.join(friends)) for circle, friends in circle_rslts])
+        
     return rslts
 
 def trainKM(EgoDS, n_components=2, covar_type='diag'):
@@ -133,16 +120,14 @@ def trainKM(EgoDS, n_components=2, covar_type='diag'):
 class EgoDataSet():
     def __init__(self, ego, by='edge'):
         self.ego = ego
-        fname = join('../Data/egonets', str(ego)+'.egonet')
-        G = read_nodeadjlist(fname)
-        featuremap = training_features()
+        G = load_ego_graph(ego)
         self.G = G
         
         assert by in ('node', 'edge')
         if by == 'node':
-            M, circles = create_features_by_node(ego, G, featuremap)
+            M, circles = create_features_by_node(ego, G)
         elif by == 'edge':
-            M, circles = create_features_by_edge(ego, G, featuremap)
+            M, circles = create_features_by_edge(ego, G)
             
         #print 'generated features...'
         
@@ -191,7 +176,7 @@ class EgoDataSet():
     def samples(self):
         return self.friends
 
-def create_features_by_edge(ego, G, featuremap):
+def create_features_by_edge(ego, G):
     """
     The affinity propagation problem uses an edge model? What is the appeal
     of using the edges instead of nodes to figure out clusters? 
@@ -209,17 +194,18 @@ def create_features_by_edge(ego, G, featuremap):
             except:
                 pass
         return row
-    # this can take some time...
-    #cliques = [set(c) for c in nx.find_cliques(G)]
+    
+    ego_cliques = get_ego_cliques(ego)
     cliques = set()
-    for cliq in nx.find_cliques(G):
+    for cliq in ego_cliques:
         for i,c1 in enumerate(cliq):
             for c2 in cliq[i+1:]:
                 cliques.add('%s_%s'%(c1,c2))
                 cliques.add('%s_%s'%(c2,c1))
-    
+
     print 'Generated cliques'
-    
+
+    featuremap = training_features()    
     ego_friends = G.nodes()
     ego_features = featuremap[ego]   
     m = {}
@@ -302,8 +288,9 @@ def create_features_by_edge(ego, G, featuremap):
     #_circles.update(unmatched)
     #circles = _circles
 
-def create_features_by_node(ego, G, featuremap):
+def create_features_by_node(ego, G):
     ego_friends = G.nodes()
+    featuremap = training_features()
     m = {}
     for friend in ego_friends:
         fr_m = featuremap[friend]
@@ -341,60 +328,6 @@ def main():
 
     print 'Done:', get_ts()
     return rslts
-
-def draw_results_graph(ego_ds, model):
-    samples = ego_ds.M
-    preds = model.predict(ego_ds.M)
-    G = ego_ds.G.copy()
-    
-    #plt.title(str())
-    plt.xticks([])
-    plt.yticks([])
-    
-    train_accuracy = np.mean(preds==ego_ds.friend_targets)*100
-    print 'train_accuracy: %.1f%%' % train_accuracy
-    
-    lbl_clrs = itertools.cycle(['w', 'r', 'g', 'b', 'c', 'm'])
-    
-    predvals = pd.Series(preds).unique()
-    predvals.sort()
-    
-    pos = nx.spring_layout(G)
-    #pos = nx.circular_layout(G)
-    #pos = nx.shell_layout(G)
-    #pos = nx.spectral_layout(G)
-
-    for lblidx, clr in zip(predvals, lbl_clrs):
-        
-        lbl = ego_ds.labels[lblidx]
-        
-        edges = samples.index[preds==lblidx]
-        
-        print 'lblidx:', lblidx, lbl, len(edges)
-        if lbl=='__NO_CIRCLE__':
-            lbl = 'No Circle'
-        
-        _nodes = set()
-        #_edges = []
-        for e in edges:
-            n1,n2 = e.split('_')
-            n2=int(n2)
-            _nodes.add(n2)
-
-            if n1!='EGO':
-                n1=int(n1)
-                #_edges.append((n1,n2))
-                _nodes.add(n1)
-        
-        nx.draw_networkx_edges(G, pos, edge_color=clr, width=1, alpha=0.5)
-        #nx.draw_networkx_edges(G, pos, edgelist=_edges, edge_color=clr, width=1, alpha=0.5)
-        nx.draw_networkx_nodes(G, pos, nodelist=_nodes, node_color=clr, width=1, alpha=0.5, label=lbl)
-        
-    #nx.draw_networkx_labels(G, pos_lbls, alpha=0.5)
-    nx.draw_networkx_labels(G, pos, alpha=0.5)
-    
-    plt.legend()
-    plt.show()    
 
 def create_dumb_data(ego_ds):
     """OK this works perfectly, as expected..."""
