@@ -4,33 +4,11 @@ import pandas as pd
 #import sys
 #import drawing
 import numpy as np
-from kaggle_data import training_features, training_circles, get_ego_cliques, load_ego_graph
+import kaggle_data as kd
 
-def train1(ego_ds, covar_type='diag'):
-    from sklearn import mixture
-    
-    labels = ego_ds.labels
-    n_components = len(labels)
-    
-    g = mixture.GMM(n_components=n_components, init_params='wc', covariance_type=covar_type)
-    samples = ego_ds.M
-    targets = ego_ds.friend_targets
-    
-    lbl_keys = [ego_ds.label_keys[lbl] for lbl in ego_ds.labels]
-    g.means_ = np.array([samples[targets&lbl].mean(axis=0) for lbl in lbl_keys])
-    
-    g.fit(samples)
-    
-    # Need to recover these to the correct bit format!
-    def xform(i):
-        return ego_ds.label_keys[ego_ds.labels[i]]
-    preds = [xform(p) for p in g.predict(samples)]
-    print 'preds:', preds
-    train_accuracy = np.mean(preds==targets)*100
-    print 'train_accuracy: %.1f%%' % train_accuracy
-    return g
+import socialCircles_metric as evaler
 
-def train(ds, samples=None, covar_type='diag', include_model=False, method='gmm'):
+def train(ds, method='sc', samples=None, covar_type='diag', include_model=False):
     from sklearn import feature_selection 
     
     labels = ds.labels
@@ -56,6 +34,9 @@ def train(ds, samples=None, covar_type='diag', include_model=False, method='gmm'
     samples = samples[samples.columns[sel.get_support()]]
     print 'samples:', samples.shape
     
+    loss = 0
+    preds = model = train_accuracy = None
+    
     try:
         if method=='gmm':
             from sklearn import mixture
@@ -65,6 +46,34 @@ def train(ds, samples=None, covar_type='diag', include_model=False, method='gmm'
                             covariance_type=covar_type)
             model.means_ = np.array([samples[targets==i].mean(axis=0) for i in xrange(len(labels))])
             model.fit(samples)
+
+            preds = model.predict(samples)
+            #print 'preds:', preds
+            train_accuracy = np.mean(preds==targets)*100
+            print 'GMM train_accuracy: %.1f%%' % train_accuracy
+
+            circle_rslts = [samples.index[preds==pred] for pred in np.unique(preds)]
+            
+            gCircles = kd.get_formatted_circles(ds.ego)
+            # will this have all the friends?
+            
+            loss = evaler.loss1(gCircles, circle_rslts)
+            print 'loss=', loss
+            #if pred > 0:
+            #    circle_rslts[pred] = set(samples_with_pred)
+
+        elif method=='km':
+            from sklearn import cluster
+            model = cluster.KMeans(n_clusters=n_components)
+            model.fit(samples)
+
+        elif method=='sc':
+            from sklearn import cluster
+            model = cluster.SpectralClustering(n_clusters=n_components)
+            model.fit(samples)
+            labels = model.labels_
+            # How do I evaluate this?
+
         elif method=='LR':
             from sklearn import linear_model, decomposition
             from sklearn.pipeline import Pipeline
@@ -77,24 +86,17 @@ def train(ds, samples=None, covar_type='diag', include_model=False, method='gmm'
                                      )
             estimator.fit(samples, targets)
             model = estimator
-            
-        # Need to cover these to the correct bit format!
-        preds = model.predict(samples)
-        #print 'preds:', preds
-        train_accuracy = np.mean(preds==targets)*100
-        print 'train_accuracy: %.1f%%' % train_accuracy
-        #return g
     except Exception as e:
         import traceback
         st = traceback.format_exc()
         print 'Problem parsing [%s]:\n%s' % (ds.ego, st)        
-        preds = model = train_accuracy = None
-    
+        
     rslts['n_samples'] = len(samples.index)
     rslts['n_components'] = n_components
     rslts['non_trivial_features'] = samples.columns
     rslts['n_non_trivial_features'] = len(samples.columns)
     rslts['train_accuracy'] = train_accuracy
+    rslts['loss'] = loss
     if include_model:
         rslts['model'] = model
         rslts['preds'] = preds
@@ -102,25 +104,14 @@ def train(ds, samples=None, covar_type='diag', include_model=False, method='gmm'
     # Ultimately the real evaluation needs to be how these map to the actual circles
     # So should do some conversion, and use that for the ultimate accuracy
     
-    circle_rslts = {}
-    for pred in np.unique(preds.unique()):
-        samples_with_pred = samples.index[preds==pred]
-        if pred > 0:
-            circle_rslts[pred] = set(samples_with_pred)
-    rslts['predicted'] = ';'.join(['%s' % (circle, ' '.join(friends)) for circle, friends in circle_rslts])
+#     rslts['predicted'] = ';'.join(['%s' % (circle, ' '.join(friends)) for circle, friends in circle_rslts])
         
     return rslts
-
-def trainKM(EgoDS, n_components=2, covar_type='diag'):
-    from sklearn import cluster
-    g = cluster.KMeans(n_clusters=n_components, covariance_type=covar_type)
-    g.fit(EgoDS.M.values)
-    return g
 
 class EgoDataSet():
     def __init__(self, ego, by='edge'):
         self.ego = ego
-        G = load_ego_graph(ego)
+        G = kd.load_ego_graph(ego)
         self.G = G
         
         assert by in ('node', 'edge')
@@ -195,7 +186,7 @@ def create_features_by_edge(ego, G):
                 pass
         return row
     
-    ego_cliques = get_ego_cliques(ego)
+    ego_cliques = kd.get_ego_cliques(ego)
     cliques = set()
     for cliq in ego_cliques:
         for i,c1 in enumerate(cliq):
@@ -205,7 +196,7 @@ def create_features_by_edge(ego, G):
 
     print 'Generated cliques'
 
-    featuremap = training_features()    
+    featuremap = kd.training_features()    
     ego_friends = G.nodes()
     ego_features = featuremap[ego]   
     m = {}
@@ -228,7 +219,7 @@ def create_features_by_edge(ego, G):
     M.fillna(0, inplace=True)
     M = M.T
 
-    circles = training_circles()[ego]
+    raw_circles = kd.processed_circles(ego)
     all_friends_edges = set(M.index)
     
     from collections import defaultdict
@@ -236,23 +227,25 @@ def create_features_by_edge(ego, G):
     
     emptyset = frozenset()
     print 'Checking circles'
-    _circles = {}
+    circles = {}
     for f_edge in all_friends_edges:
         f1,f2 = f_edge.split('_') 
-        f1c = circles.get(f1, emptyset)
-        f2c = circles.get(f2, emptyset)
+        f1c = raw_circles.get(f1, emptyset)
+        f2c = raw_circles.get(f2, emptyset)
         intersect = f1c.intersection(f2c)
         #if f1c==f2c or f1=='EGO':
         if len(intersect)>0:
             if len(intersect)>1:
                 overlaps[len(intersect)]+=1
                 #print len(intersect), intersect 
-            _circles[f_edge] = list(intersect)[0]
+            circles[f_edge] = list(intersect)[0]
         elif f1=='EGO' and f2c:
-            circles[f_edge] = list(f2c)[0]
+            # wow this causes some bad vibes...
+            #circles[f_edge] = list(f2c)[0]
+            pass
     
     print 'overlaps:', overlaps
-    return M, _circles
+    return M, circles
     
     # need to check pairwise to see if there are any edges
 #     for c, friends in circles.iteritems():
@@ -288,9 +281,28 @@ def create_features_by_edge(ego, G):
     #_circles.update(unmatched)
     #circles = _circles
 
+def main():
+    print 'Starting:', get_ts()
+    rslts = {}
+    egocircles = kd.training_circles().keys()
+    
+    total_loss = 0
+    print '# egocircles:', len(egocircles)
+    for i, ego in enumerate(egocircles):
+        print '-'*80
+        print 'Executing for %s (#%s)' %(ego, i)
+        ds = EgoDataSet(ego, by='edge')
+        print 'Initialized ego'
+        rslts[ego] = train(ds, 'gmm')
+        total_loss += rslts[ego]['loss']
+
+    print 'Total loss:', total_loss
+    print 'Done:', get_ts()
+    return rslts
+
 def create_features_by_node(ego, G):
     ego_friends = G.nodes()
-    featuremap = training_features()
+    featuremap = kd.training_features()
     m = {}
     for friend in ego_friends:
         fr_m = featuremap[friend]
@@ -303,7 +315,7 @@ def create_features_by_node(ego, G):
     M.fillna(0, inplace=True)
     M = M.T
     
-    circles = training_circles()[ego]
+    circles = kd.training_circles()[ego]
 
     # A circle for those not in any circles...    
     all_friends = set(M.index)
@@ -313,21 +325,29 @@ def create_features_by_node(ego, G):
     
     return M, circles
 
-def main():
-    print 'Starting:', get_ts()
-    rslts = {}
-    egocircles = training_circles().keys()
+def train1(ego_ds, covar_type='diag'):
+    from sklearn import mixture
     
-    print '# egocircles:', len(egocircles)
-    for i, ego in enumerate(egocircles):
-        print '-'*80
-        print 'Executing for %s (#%s)' %(ego, i)
-        ds = EgoDataSet(ego, by='edge')
-        print 'Initialized ego'
-        rslts[ego] = train(ds)
-
-    print 'Done:', get_ts()
-    return rslts
+    labels = ego_ds.labels
+    n_components = len(labels)
+    
+    g = mixture.GMM(n_components=n_components, init_params='wc', covariance_type=covar_type)
+    samples = ego_ds.M
+    targets = ego_ds.friend_targets
+    
+    lbl_keys = [ego_ds.label_keys[lbl] for lbl in ego_ds.labels]
+    g.means_ = np.array([samples[targets&lbl].mean(axis=0) for lbl in lbl_keys])
+    
+    g.fit(samples)
+    
+    # Need to recover these to the correct bit format!
+    def xform(i):
+        return ego_ds.label_keys[ego_ds.labels[i]]
+    preds = [xform(p) for p in g.predict(samples)]
+    print 'preds:', preds
+    train_accuracy = np.mean(preds==targets)*100
+    print 'train_accuracy: %.1f%%' % train_accuracy
+    return g
 
 def create_dumb_data(ego_ds):
     """OK this works perfectly, as expected..."""

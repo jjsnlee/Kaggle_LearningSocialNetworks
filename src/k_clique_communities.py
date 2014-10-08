@@ -42,7 +42,7 @@ def main(cliqueSize=5,
         # read graph
         filename = str(userId) + '.egonet'
         G = read_nodeadjlist(egonetFolderName + filename)
-
+    
         # do not calculate for large graphs (it takes too long)
         if len(G.nodes()) > tooManyNodesThreshold:
             print 'skipping user ' + str(userId)
@@ -50,14 +50,11 @@ def main(cliqueSize=5,
         else:
             print 'predicting for user ' + str(userId)
 
-        # find comunities using k_clique_communities()
-        listOfCircles = []
-        kCliqueComunities = list(nx.k_clique_communities(G,cliqueSize))
-        for community in kCliqueComunities:
-            # leave only relativly large communities
-            if len(community) >= tooLittleFriendsInCircleThreshold:
-                listOfCircles.append(list(community))
-
+        listOfCircles = \
+        predict_user(G, cliqueSize=cliqueSize,
+                     tooLittleFriendsInCircleThreshold=tooLittleFriendsInCircleThreshold,
+                     #tooManyNodesThreshold=tooManyNodesThreshold
+                     )
         # populate prediction string
         predictionString = ''
         for circle in listOfCircles:
@@ -71,3 +68,18 @@ def main(cliqueSize=5,
             submission.ix[submission['UserId'] == userId,'Predicted'] = predictionString
 
     submission.to_csv(submissionFolderName + str(submissionNumber) + '.csv', index=False)
+
+def predict_user(G,
+                 cliqueSize=5,
+                 tooLittleFriendsInCircleThreshold=10,
+                 #tooManyNodesThreshold=220
+                 ):
+    # find comunities using k_clique_communities()
+    listOfCircles = []
+    kCliqueComunities = list(nx.k_clique_communities(G,cliqueSize))
+    for community in kCliqueComunities:
+        # leave only relativly large communities
+        if len(community) >= tooLittleFriendsInCircleThreshold:
+            listOfCircles.append(list(community))
+
+    return listOfCircles

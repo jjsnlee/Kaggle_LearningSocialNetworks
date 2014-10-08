@@ -1,7 +1,10 @@
-from os.path import isfile, join
+from os.path import join
 from os import listdir
 import pandas as pd
 import networkx as nx
+import json
+import os
+import zipfile
 
 DATA_DIR = '../Data'
 TRAINING_DIR = join(DATA_DIR, 'Training')
@@ -22,7 +25,7 @@ def training_features(filename='../features.txt'):
                 ppls[person][f[:i]] = int(f[i+1:])
         _featuremap = ppls
         print 'loaded features...'
-    return _featuremap
+    return _featuremap.copy()
 
 from collections import defaultdict
 _ego_circles = {}
@@ -35,30 +38,32 @@ def training_circles():
                 continue
             
             fname = join(TRAINING_DIR, f)
-            _circles = {}
+            circles = {}
             for line in open(fname):
                 circle, _friends = line.split(':')
                 friends = _friends.strip().split(' ')
-                _circles[circle] = friends
-            circles = defaultdict(set)
-            for c, vals in _circles.iteritems():
-                #circles.update(dict([(int(v),c) for v in vals]))
-                for v in vals:
-                    circles[v].add(c)
-                    #circles[int(v)].add(c)
+                circles[circle] = friends
 
             ego = int(f.replace('.circles', ''))
             _ego_circles[ego] = circles
         #return circles
-    return _ego_circles
+    return _ego_circles.copy()
 
-import json
-import os
-import zipfile
+def get_formatted_circles(ego):
+    return [set([int(_v) for _v in v]) for v in training_circles()[ego].values()]
+
+def processed_circles(ego):
+    _circles = training_circles()[ego]
+    circles = defaultdict(set)
+    for c, vals in _circles.iteritems():
+        #circles.update(dict([(int(v),c) for v in vals]))
+        for v in vals:
+            circles[v].add(c)
+            #circles[int(v)].add(c)
+    return circles
 
 #_cliques = {}
 def get_ego_cliques(ego):
-    # this can take some time...
     #cliques = [set(c) for c in nx.find_cliques(G)]
 #     global _cliques
 #     if ego not in _cliques:
@@ -69,26 +74,26 @@ def get_ego_cliques(ego):
 #             egos = [f.replace('.egonet') for f in listdir(EGONET_DIR) 
 #                     if f.endswith('.egonet')]
 #             cliques_dmp = join(DATA_DIR, 'cliques_test.zip')
+    #if ego in [5881]:
+    if ego==5881:
+        print 'In get_ego_cliques, skipping ego', ego
+        return {}
+    
     ego_cliques_dmp = join(DATA_DIR, 'cliques', 'cliques_%s.zip'%ego)
-            
+
     if os.path.exists(ego_cliques_dmp):
+        print 'Loading cliques for ego:', ego
         zf = zipfile.ZipFile(ego_cliques_dmp, mode='r')
         ego_cliques = json.loads(zf.read('files.json'))
         #_cliques = json.loads(open(cliques_dmp, 'r').read())
         #_cliques = pickle.load(open(cliques_dmp, 'rb'))
-
     else:
         print 'Processing cliques: nx.find_cliques'
-        #egos = egos[:2]
         print 'ego:', ego
         fname = join(EGONET_DIR, str(ego)+'.egonet')
         G = read_nodeadjlist(fname)
+        # this can take some time...
         ego_cliques = list(nx.find_cliques(G))
-        #_cliques = ego_cliques
-
-#             output = open(cliques_dmp, 'wb')
-#             # Pickle dictionary using protocol 0.
-#             pickle.dump(_cliques, output)
         # http://pymotw.com/2/zipfile/
         try:
             import zlib
@@ -100,7 +105,6 @@ def get_ego_cliques(ego):
         #    fh.write(json_rslt)
         with zipfile.ZipFile(ego_cliques_dmp, mode='w') as zf:
             zf.writestr('files.json', json_rslt, compress_type=compression)
-            #zf.close()
 
     return ego_cliques
 
@@ -122,7 +126,14 @@ def read_nodeadjlist(filename):
 
 def get_num_of_circles():
     tc = training_circles()
-    return [(ego, len(set(v.values()))) for ego,v in tc.iteritems()]
+    def flatten(vals):
+        allv = set()
+        for v in vals:
+            allv = allv.union(v)
+        return allv
+    #return [(ego, len(flatten(v.values()))) for ego,v in tc.iteritems()]
+    return [(ego, len(flatten(v.values()))) for ego,v in tc.iteritems()]
+    #return [(ego, len(set(v.values()))) for ego,v in tc.iteritems()]
 
 def get_acc_as_series(rslts):
     return pd.Series([r['train_accuracy'] for r in rslts.values()])

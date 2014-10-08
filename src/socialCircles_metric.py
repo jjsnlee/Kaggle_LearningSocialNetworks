@@ -41,45 +41,53 @@ def loss1(usersPerCircle, usersPerCircleP):
             editCost += mm2[row][column]
         return int(editCost)
 
-if len(sys.argv) != 3:
-    print "Expected two arguments (ground-truth and prediction filenames)"
-    sys.exit(0)
+def main(groundtruthFile, predictionFile):
 
-groundtruthFile = sys.argv[1] # Ground-truth
-predictionFile = sys.argv[2] # Prediction
+    gf = open(groundtruthFile, 'r') # Read the ground-truth
+    pf = open(predictionFile, 'r') # Read the predictions
+    
+    # Should just be header
+    gf.readline()
+    pf.readline()
+    
+    gLines = gf.readlines()
+    pLines = pf.readlines()
+    
+    gf.close()
+    pf.close()
 
-gf = open(groundtruthFile, 'r') # Read the ground-truth
-pf = open(predictionFile, 'r') # Read the predictions
-
-# Should just be header
-gf.readline()
-pf.readline()
-
-gLines = gf.readlines()
-pLines = pf.readlines()
-
-gf.close()
-pf.close()
-
-if len(gLines) != len(pLines):
-    print "Ground-truth and prediction files should have the same number of lines"
-    sys.exit(0)
-
-circlesG = {}
-circlesP = {}
-for gl, pl in zip(gLines, pLines):
-    uidG,friendsG = gl.split(',')
-    uidP,friendsP = pl.split(',')
-    circlesG[int(uidG)] = [set([int(x) for x in c.split()]) for c in friendsG.split(';')]
-    circlesP[int(uidP)] = [set([int(x) for x in c.split()]) for c in friendsP.split(';')]
-
-totalLoss = 0
-for k in circlesP.keys():
-    if not circlesG.has_key(k):
-        print "Ground-truth has prediction for circle", k, "but prediction does not"
+    if len(gLines) != len(pLines):
+        print "Ground-truth and prediction files should have the same number of lines"
         sys.exit(0)
-    l = loss1(circlesG[k], circlesP[k])
-    print "loss for user", k, "=", l
-    totalLoss += l
 
-print "total loss for all users =", totalLoss
+    circlesG = {}
+    circlesP = {}
+    for gl, pl in zip(gLines, pLines):
+        uidG,friendsG = gl.split(',')
+        uidP,friendsP = pl.split(',')
+        circlesG[int(uidG)] = [set([int(x) for x in c.split()]) for c in friendsG.split(';')]
+        circlesP[int(uidP)] = [set([int(x) for x in c.split()]) for c in friendsP.split(';')]
+    
+    return test(circlesG, circlesP)
+
+def test(circlesG, circlesP):
+    totalLoss = 0
+    for k in circlesP.keys():
+        if not circlesG.has_key(k):
+            print "Ground-truth has prediction for circle", k, "but prediction does not"
+            sys.exit(0)
+        l = loss1(circlesG[k], circlesP[k])
+        print "loss for user", k, "=", l
+        totalLoss += l
+    
+    print "total loss for all users =", totalLoss
+    return totalLoss
+
+
+if __name__=='__main__':
+    if len(sys.argv) != 3:
+        print "Expected two arguments (ground-truth and prediction filenames)"
+        sys.exit(0)
+    groundtruthFile = sys.argv[1] # Ground-truth
+    predictionFile = sys.argv[2] # Prediction
+    main(groundtruthFile, predictionFile)
