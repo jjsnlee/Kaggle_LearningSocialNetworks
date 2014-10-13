@@ -61,24 +61,11 @@ def processed_circles(ego):
     return circles
 
 def get_ego_cliques(ego):
-    #if ego in [5881]:
-    if ego==5881:
-        print 'In get_ego_cliques, skipping ego', ego
-        return {}
-    
     ego_cliques_dmp = join(DATA_DIR, 'cliques', 'cliques_%s.zip'%ego)
-
-    if os.path.exists(ego_cliques_dmp):
-        print 'Loading cliques for ego:', ego
-        with zipfile.ZipFile(ego_cliques_dmp, mode='r') as zf:
-            ego_cliques = []
-            for f in zf.namelist():
-                ego_cliques+=json.loads(zf.read(f))
-    else:
+    if not os.path.exists(ego_cliques_dmp):
         print 'Processing cliques: nx.find_cliques, ego:', ego
         G = load_ego_graph(ego)
         # this can take some time...
-        
         # http://pymotw.com/2/zipfile/
         with zipfile.ZipFile(ego_cliques_dmp, mode='w') as zf:
             fileno = 1
@@ -90,7 +77,17 @@ def get_ego_cliques(ego):
                     ego_cliques = []
                 ego_cliques.append(clqs)
             _write_cliques_file(zf, fileno, ego_cliques)
-    return ego_cliques
+            ego_cliques = None
+
+    if ego==5881:
+        print 'In get_ego_cliques, skipping ego', ego
+    else:
+        print 'Loading cliques for ego:', ego
+        with zipfile.ZipFile(ego_cliques_dmp, mode='r') as zf:
+            for f in zf.namelist():
+                cliques_in_file = json.loads(zf.read(f))
+                for clique in cliques_in_file:
+                    yield clique 
 
 def _write_cliques_file(zf, fileno, ego_cliques):
     try:
@@ -112,8 +109,7 @@ def get_ego_kclique_communities(ego):
             ccs = json.loads(zf.read('files1.json'))
     else:
         ego_cliques = get_ego_cliques(ego)
-        print 'Processing k-clique communities: nx.find_cliques, ego: %s, # cliques: %s' %\
-            (ego, len(ego_cliques))
+        print 'Processing k-clique communities: nx.find_cliques, ego:', ego
         G = load_ego_graph(ego)
         ccs = [list(cc) for cc in nx.k_clique_communities(G, 6, cliques=ego_cliques)]
         try:

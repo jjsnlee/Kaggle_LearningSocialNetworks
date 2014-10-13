@@ -2,12 +2,8 @@ import networkx as nx
 import pandas as pd
 import numpy as np
 import kaggle_data as kd
-import re
-
+#import re
 import socialCircles_metric as evaler
-
-def select_features():
-    pass
 
 def train(ds, method='gmm', covar_type='diag', include_model=False, 
           uf=None,
@@ -34,7 +30,6 @@ def train(ds, method='gmm', covar_type='diag', include_model=False,
 #     print 'samples.shape:', samples.shape, 'targets.shape:', targets.shape
 
     n_components = ds.n_components
-
     rslts = {}
 
     #sel = feature_selection.VarianceThreshold(threshold=(.8 * (1 - .8)))
@@ -46,7 +41,7 @@ def train(ds, method='gmm', covar_type='diag', include_model=False,
         samples = samples[samples.columns[sel.get_support()]]
         print 'samples:', samples.shape
 
-    from sklearn.svm import LinearSVC    
+    from sklearn.svm import LinearSVC
     from sklearn.cross_validation import StratifiedKFold
     from sklearn.feature_selection import RFECV
     #print 'len(samples):', len(samples)
@@ -161,6 +156,7 @@ def train(ds, method='gmm', covar_type='diag', include_model=False,
     if include_model:
         rslts['model'] = model
         rslts['preds'] = preds
+        rslts['circle_rslts'] = circle_rslts
     
     # Ultimately the real evaluation needs to be how these map to the actual circles
     # So should do some conversion, and use that for the ultimate accuracy
@@ -246,6 +242,9 @@ class EgoDataSet():
 def learn_number_clusters(ds, method='ap'):
     if method=='ap':
         from sklearn import cluster, covariance
+#         _, labels = cluster.affinity_propagation(ds.M)
+#         return labels
+#     elif method=='ap2':
         edge_model = covariance.GraphLassoCV(verbose=True)
         # standardize the time series: using correlations rather than covariance
         # is more efficient for structure recovery
@@ -267,23 +266,44 @@ def learn_number_clusters(ds, method='ap'):
         return X
 
 def create_features_by_edge2(ego, G):
-    ego_cliques = kd.get_ego_cliques(ego)
-    print 'About to generate cliques', len(ego_cliques)
+    from itertools import combinations
+    
+    print 'About to generate cliques'
     featuremap = kd.training_features()    
     ccs = [set(c) for c in nx.connected_components(G)]
     m = {}
-    for cliq in ego_cliques:
-        sample = '_'.join(map(str, cliq))
-        m[sample] = union_features2([featuremap[user] for user in cliq])
-        cliq = set(cliq)
-        for cidx, cc in enumerate(ccs):
-            if not cliq.difference(cc):
-                m[sample]['cc_%s_%s'%(ego, cidx)] = 1
-            else:
-                #m[sample]['cc_none'] = 1
-                pass
+    clique_subset_size = 10
+    dt = ','.join(['i']*clique_subset_size)
+    ncliques = 0
+    for cliq in kd.get_ego_cliques(ego):
+        if len(cliq)<clique_subset_size:
+            clique_subset_size = len(cliq)
+            dt = ','.join(['i']*clique_subset_size)
+        # from http://numpy-discussion.10968.n7.nabble.com/itertools-combinations-to-numpy-td16635.html
+        for cliq_slice in np.fromiter(combinations(cliq, clique_subset_size), dtype=dt, count=-1):        
+            cliq_slice.sort()
+            #sample = '_'.join(map(str, cliq_slice))
+            sample = tuple(cliq_slice)
+            if sample not in m:
+                ncliques+=1
+                if ncliques%10000==0:
+                    print 'Processed %s cliques'%ncliques
+
+                m[sample] = union_features2([featuremap[user] for user in cliq_slice])
+                cliq_slice = set(cliq_slice)
+                for cidx, cc in enumerate(ccs):
+                    # all the elements in cliq are also in cc
+                    if not cliq_slice.difference(cc):
+                        m[sample]['cc_%s_%s'%(ego, cidx)] = 1
+                    else:
+                        #m[sample]['cc_none'] = 1
+                        pass
+    print '# of cliques:', ncliques
+    for sample in m.keys():
         if len(m[sample])==0:
             del m[sample]
+
+    m = dict([('_'.join(map(str,k)),v) for k,v in m.iteritems()])
 
     M = pd.DataFrame(m)
     M.fillna(0, inplace=True)
@@ -317,14 +337,9 @@ def union_features(m1, m2):
     return row
 
 def create_features_by_edge(ego, G):
-    """
-    The affinity propagation problem also uses an edge model? 
-    What is the appeal of using the edges instead of nodes to figure out clusters? 
-    """
-    ego_cliques = kd.get_ego_cliques(ego)
-    print 'About to generate cliques', len(ego_cliques)
+    print 'About to generate cliques'
     cliques = set()
-    for cliq in ego_cliques:
+    for cliq in kd.get_ego_cliques(ego):
         for i,c1 in enumerate(cliq):
             for c2 in cliq[i+1:]:
                 # faster to hash ints? even tuples
@@ -396,12 +411,18 @@ def _get_circles(ego, all_friends_edges, raw_circles=None):
     print 'overlaps:', overlaps
     return circles
 
-def main(method='gmm', by='edge', verbose=False, feature_threshhold=20, uf=None): #uf=uniq_features, 
-    print 'Starting:', get_ts(), 'using', method
+def main(method='gmm', by='edge2', verbose=False, feature_threshhold=20, 
+         uf=None, refresh=True, egofilter=None): #uf=uniq_features, 
+    print 'Starting:', get_ts(), 'using', method, ', by:', by
     rslts = {}
     egocircles = kd.training_circles().keys()
-    import kaggle_ego_cache as kec
-    kec._egocache={}
+    if refresh:
+        import kaggle_ego_cache as kec
+        kec._egocache={}
+    
+    if egofilter:
+        egocircles = [ec for ec in egocircles if ec in egofilter]
+        print 'As a result of the filter, will just do', egocircles
     
     total_loss = total_trivial_loss = 0
     print '# egocircles:', len(egocircles)
@@ -421,15 +442,18 @@ def main(method='gmm', by='edge', verbose=False, feature_threshhold=20, uf=None)
     print 'Done:', get_ts()
     return rslts
 
-def learn_labels(ego):
-    X = ego.M
-    labels = ego.targets
-    
-    from sklearn.semi_supervised import label_propagation
-    label_spread = label_propagation.LabelSpreading(kernel='knn', alpha=1.0)
-    label_spread.fit(X, labels)
+# def learn_labels(ego):
+#     X = ego.M
+#     labels = ego.targets
+#     from sklearn.semi_supervised import label_propagation
+#     label_spread = label_propagation.LabelSpreading(kernel='knn', alpha=1.0)
+#     label_spread.fit(X, labels)
 
 def create_features_by_node(ego, G):
+    """
+    The affinity propagation problem also uses an edge model? 
+    What is the appeal of using the edges instead of nodes to figure out clusters? 
+    """
     ego_friends = G.nodes()
     featuremap = kd.training_features()
     m = {}
