@@ -171,12 +171,14 @@ def eval_model(ds, circle_rslts):
     for circle in circle_rslts:
         curr_circle = set()
         other_circles.append(curr_circle)
-        for edge in circle:
-            users = edge.split('_')
+        for users in circle:
+            #users = edge.split('_')
             if users[0]!='EGO':
-                curr_circle.add(int(users[0]))
+                curr_circle.add(users[0])
+                #curr_circle.add(int(users[0]))
             if len(users)>1:
-                curr_circle.update(map(int, users[1:]))
+                curr_circle.update([int(m) for m in users[1:] if m]) # could be 0, as padded for the multi-index
+                #curr_circle.update(map(int, users[1:]))
         circled_friends = circled_friends.union(curr_circle)
     all_friends = set(ds.friends)
     other_circles.append(all_friends.difference(circled_friends))
@@ -188,7 +190,7 @@ def eval_model(ds, circle_rslts):
     return loss, trivial_loss
 
 class EgoDataSet():
-    def __init__(self, ego, by='edge'):
+    def __init__(self, ego, by='edge', clique_subset_size=10):
         self.ego = ego
         G = kd.load_ego_graph(ego)
         self.G = G
@@ -199,7 +201,7 @@ class EgoDataSet():
         elif by == 'edge':
             M = create_features_by_edge(ego, G)
         elif by == 'edge2':
-            M = create_features_by_edge2(ego, G)
+            M = create_features_by_edge2(ego, G, clique_subset_size)
             
         #print 'generated features...'
         circles = _get_circles(ego, set(M.index))
@@ -265,125 +267,105 @@ def learn_number_clusters(ds, method='ap'):
         X = model.fit_transform(ds.M)
         return X
 
-def create_features_by_edge2(ego, G):
+def create_features_by_edge2(ego, G, clique_subset_size=10):
     from itertools import combinations
-    
     print 'About to generate cliques'
     featuremap = kd.training_features()    
     ccs = [set(c) for c in nx.connected_components(G)]
     m = {}
-    clique_subset_size = 10
-    dt = ','.join(['i']*clique_subset_size)
+    def_dt = ','.join(['i']*clique_subset_size)
     ncliques = 0
+    max_clique_len = 0
+    
+    # Some egos can run up to 8.4 million iterations, so the extra work with 
+    # the generators and memory minimization 
     for cliq in kd.get_ego_cliques(ego):
-        if len(cliq)<clique_subset_size:
-            clique_subset_size = len(cliq)
-            dt = ','.join(['i']*clique_subset_size)
+        curr_css = clique_subset_size
+        if len(cliq)<curr_css:
+            curr_css = len(cliq)
+            dt = ','.join(['i']*curr_css)
+        else:
+            dt = def_dt
         # from http://numpy-discussion.10968.n7.nabble.com/itertools-combinations-to-numpy-td16635.html
-        for cliq_slice in np.fromiter(combinations(cliq, clique_subset_size), dtype=dt, count=-1):        
+        for cliq_slice in np.fromiter(combinations(cliq, curr_css), dtype=dt, count=-1):        
             cliq_slice.sort()
             #sample = '_'.join(map(str, cliq_slice))
             sample = tuple(cliq_slice)
             if sample not in m:
+                max_clique_len = max(max_clique_len, len(sample))
                 ncliques+=1
-                if ncliques%10000==0:
+                if ncliques%100000==0:
                     print 'Processed %s cliques'%ncliques
-
                 m[sample] = union_features2([featuremap[user] for user in cliq_slice])
                 cliq_slice = set(cliq_slice)
                 for cidx, cc in enumerate(ccs):
-                    # all the elements in cliq are also in cc
+                    # no difference, meaning all the elements in cliq are also in cc
                     if not cliq_slice.difference(cc):
-                        m[sample]['cc_%s_%s'%(ego, cidx)] = 1
+                        m[sample]['cc_'+str(ego)+'_'+str(cidx)] = 1
+                        #m[sample]['cc_%s_%s'%(ego, cidx)] = 1
                     else:
                         #m[sample]['cc_none'] = 1
                         pass
     print '# of cliques:', ncliques
-    for sample in m.keys():
-        if len(m[sample])==0:
-            del m[sample]
+    #m = dict([('_'.join(map(str,k)),v) for k,v in m.iteritems()])
+    def iterM(m, max_clique_len):
+        for k in m.keys():
+            v = m[k]
+            del m[k]
+            if len(v)==0:
+                yield None, None
+            else:
+                if len(k)<max_clique_len:
+                    k = list(k)
+                    while len(k)<max_clique_len:
+                        k.append(0)
+                    k = tuple(k)
+                ts = pd.Series(v)
+                yield k,ts.to_sparse()
 
-    m = dict([('_'.join(map(str,k)),v) for k,v in m.iteritems()])
+    def createM(rows):
+        M = pd.DataFrame(rows)
+        #M = M.to_sparse()
+        return M.T
 
-    M = pd.DataFrame(m)
+    rows = {}
+    Ms = []
+    for idx,(key,row) in enumerate(iterM(m, max_clique_len)):
+        if idx%10000==0 and rows:
+            M = createM(rows)
+            print 'M.shape:', M.shape
+            Ms.append(M)
+            rows = {}
+        if key:
+            rows[key]=row
+    if rows:
+        Ms.append(createM(rows))
+        
+    #print '# of sparse rows:', len(rows)
+    #M = pd.DataFrame(rows)
+    M = pd.concat(Ms)
+    print 'Created DataFrame M', M.shape
+    #M = M.T
     M.fillna(0, inplace=True)
-    M = M.T
     return M
 
 def union_features2(users):
+#     features = pd.DataFrame(users)
+#     features = features.T
+#     all_same = features[features.T.mean()==features[0]][0].to_dict()
+#     return dict([(str(k)+'='+str(int(v)), 1) for k,v in all_same.iteritems()])
     row = {}
     feature_keys = set([k for u in users for k in u.keys()])
     for k in feature_keys:
         try:
             # Need to explicitly make this 0/1
             feat_vals = np.array([u[k] for u in users])
+            #if int(np.mean(feat_vals))==feat_vals[0]:
             if feat_vals.mean()==feat_vals[0]:
-                row['%s=%s'%(k, users[0][k])] = 1
+                row[str(k)+'='+str(users[0][k])] = 1
         except:
             pass
     return row
-
-def union_features(m1, m2):
-    row = {}
-    keys = set(m1.keys())
-    keys.update(m2.keys())
-    for k in keys:
-        try:
-            # Need to explicitly make this 0/1
-            if m1[k]==m2[k]:
-                row['%s=%s'%(k, m1[k])] = 1
-        except:
-            pass
-    return row
-
-def create_features_by_edge(ego, G):
-    print 'About to generate cliques'
-    cliques = set()
-    for cliq in kd.get_ego_cliques(ego):
-        for i,c1 in enumerate(cliq):
-            for c2 in cliq[i+1:]:
-                # faster to hash ints? even tuples
-                cliques.add((c1,c2))
-                cliques.add((c2,c1))
-                #cliques.add('%s_%s'%(c1,c2))
-                #cliques.add('%s_%s'%(c2,c1))
-    
-    print 'Generated cliques', len(cliques)
-
-    featuremap = kd.training_features()    
-    ego_friends = G.nodes()
-    ego_features = featuremap[ego]   
-    ccs = [set(c) for c in nx.connected_components(G)]
-    #non_ccs = set()
-    #ccs = [non_ccs] + ccs
-
-    m = {}
-    for f1 in ego_friends:
-        f1_m = featuremap[f1]
-        m['EGO_%s'%(f1)] = union_features(ego_features, f1_m)
-        # need to add the ego
-        for f2 in ego_friends:
-            if f1==f2 or '%s_%s'%(f2,f1) in m:
-                continue
-            f2_m = featuremap[f2]
-            key = '%s_%s'%(f1,f2)
-            m[key] = union_features(f1_m, f2_m)
-            if (f1,f2) in cliques:
-                m[key]['in_clique'] = 1
-            
-            # should add a non-connected feature?
-            for cidx, cc in enumerate(ccs):
-                if f1 in cc and f2 in cc:
-                    m[key]['cc_%s_%s'%(ego, cidx)] = 1
-                else:
-                    m[key]['cc_none'] = 1
-
-    print 'Generated clique features'
-
-    M = pd.DataFrame(m)
-    M.fillna(0, inplace=True)
-    M = M.T
-    return M
 
 def _get_circles(ego, all_friends_edges, raw_circles=None):
     if raw_circles is None:
@@ -393,8 +375,8 @@ def _get_circles(ego, all_friends_edges, raw_circles=None):
     emptyset = frozenset()
     print 'Checking circles'
     circles = {}
-    for f_edge in all_friends_edges:
-        users = f_edge.split('_')
+    for users in all_friends_edges:
+        #users = f_edge.split('_')
         user_edge_circles = [raw_circles.get(u, emptyset) for u in users]
         intersect = reduce(lambda a,b: a.intersection(b), user_edge_circles) 
         #if f1c==f2c or f1=='EGO':
@@ -402,7 +384,7 @@ def _get_circles(ego, all_friends_edges, raw_circles=None):
             if len(intersect)>1:
                 overlaps[len(intersect)]+=1
                 #print len(intersect), intersect 
-            circles[f_edge] = list(intersect)[0]
+            circles[users] = list(intersect)[0]
 #         elif f1=='EGO' and f2c:
 #             # wow this causes some bad vibes...
 #             #circles[f_edge] = list(f2c)[0]
@@ -411,25 +393,30 @@ def _get_circles(ego, all_friends_edges, raw_circles=None):
     print 'overlaps:', overlaps
     return circles
 
-def main(method='gmm', by='edge2', verbose=False, feature_threshhold=20, 
+def main(method='gmm', by='edge2', verbose=False, feature_threshhold=20,
+         clique_subset_size=10, 
          uf=None, refresh=True, egofilter=None): #uf=uniq_features, 
     print 'Starting:', get_ts(), 'using', method, ', by:', by
     rslts = {}
     egocircles = kd.training_circles().keys()
+    import kaggle_ego_cache as kec
     if refresh:
-        import kaggle_ego_cache as kec
         kec._egocache={}
     
     if egofilter:
-        egocircles = [ec for ec in egocircles if ec in egofilter]
+        if isinstance(egofilter, list):
+            egocircles = [ec for ec in egocircles if ec in egofilter]
+        else:
+            egocircles = filter(egofilter, egocircles)
         print 'As a result of the filter, will just do', egocircles
     
+    egocircles.sort()
     total_loss = total_trivial_loss = 0
     print '# egocircles:', len(egocircles)
     for i, ego in enumerate(egocircles):
         print '-'*80
         print 'Executing for %s (#%s)' %(ego, i)
-        ds = kec.get_ego(ego, by=by)
+        ds = kec.get_ego(ego, by=by, clique_subset_size=clique_subset_size)
         print 'Initialized ego'
         rslts[ego] = train(ds, method, uf=uf, 
                            verbose=verbose, 
@@ -505,6 +492,63 @@ uniq_features = {'birthday',
  'work;position;id',
  'work;position;name',
  'work;start_date'}
+
+def create_features_by_edge(ego, G):
+    def union_features(m1, m2):
+        row = {}
+        keys = set(m1.keys())
+        keys.update(m2.keys())
+        for k in keys:
+            try:
+                # Need to explicitly make this 0/1
+                if m1[k]==m2[k]:
+                    row['%s=%s'%(k, m1[k])] = 1
+            except:
+                pass
+        return row
+    print 'About to generate cliques'
+    cliques = set()
+    for cliq in kd.get_ego_cliques(ego):
+        for i,c1 in enumerate(cliq):
+            for c2 in cliq[i+1:]:
+                # faster to hash ints? even tuples
+                cliques.add((c1,c2))
+                cliques.add((c2,c1))
+    print 'Generated cliques', len(cliques)
+    featuremap = kd.training_features()    
+    ego_friends = G.nodes()
+    ego_features = featuremap[ego]   
+    ccs = [set(c) for c in nx.connected_components(G)]
+    #non_ccs = set()
+    #ccs = [non_ccs] + ccs
+
+    m = {}
+    for f1 in ego_friends:
+        f1_m = featuremap[f1]
+        m['EGO_%s'%(f1)] = union_features(ego_features, f1_m)
+        # need to add the ego
+        for f2 in ego_friends:
+            if f1==f2 or '%s_%s'%(f2,f1) in m:
+                continue
+            f2_m = featuremap[f2]
+            key = '%s_%s'%(f1,f2)
+            m[key] = union_features(f1_m, f2_m)
+            if (f1,f2) in cliques:
+                m[key]['in_clique'] = 1
+            
+            # should add a non-connected feature?
+            for cidx, cc in enumerate(ccs):
+                if f1 in cc and f2 in cc:
+                    m[key]['cc_%s_%s'%(ego, cidx)] = 1
+                else:
+                    m[key]['cc_none'] = 1
+
+    print 'Generated clique features'
+
+    M = pd.DataFrame(m)
+    M.fillna(0, inplace=True)
+    M = M.T
+    return M
 
 def create_dumb_data(ego_ds):
     """OK this works perfectly, as expected..."""
