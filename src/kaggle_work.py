@@ -2,6 +2,8 @@ import networkx as nx
 import pandas as pd
 import numpy as np
 import kaggle_data as kd
+import os
+from os.path import join
 #import re
 import socialCircles_metric as evaler
 
@@ -15,6 +17,9 @@ def train(ds, method='gmm', covar_type='diag', include_model=False,
     samples = ds.M
     # Remove columns with less than 5 incidents 
     samples = samples[samples.columns[samples.sum()>feature_threshhold]]
+
+    #samples = samples[samples.T.sum()>0]
+    #targets = targets[samples.T.sum()>0]
 #     features = set(samples.columns)
 #     xre = re.compile('(^.+;)id=(\d+)$')
 #     for f in features:
@@ -189,6 +194,9 @@ def eval_model(ds, circle_rslts):
     print 'trivial_loss=', trivial_loss
     return loss, trivial_loss
 
+#r=kwk.main(feature_threshhold=3,clique_subset_size=20,uf=False,
+#     egofilter=lambda x:x not in [9947,3735,23299,18005,15672,1357,5881,12800,26492,345,3059,4829,16203])
+
 class EgoDataSet():
     def __init__(self, ego, by='edge', clique_subset_size=10):
         self.ego = ego
@@ -196,12 +204,15 @@ class EgoDataSet():
         self.G = G
         
         assert by in ('node', 'edge', 'edge2')
-        if by == 'node':
-            M = create_features_by_node(ego, G)
-        elif by == 'edge':
-            M = create_features_by_edge(ego, G)
-        elif by == 'edge2':
-            M = create_features_by_edge2(ego, G, clique_subset_size)
+        M = self.read(ego, by, clique_subset_size)
+        if M is None:
+            if by == 'node':
+                M = create_features_by_node(ego, G)
+            elif by == 'edge':
+                M = create_features_by_edge(ego, G)
+            elif by == 'edge2':
+                M = create_features_by_edge2(ego, G, clique_subset_size)
+            self.write(M, ego, by, clique_subset_size)
             
         #print 'generated features...'
         circles = _get_circles(ego, set(M.index))
@@ -240,6 +251,17 @@ class EgoDataSet():
     @property
     def friends(self):
         return self.G.nodes()
+    @property
+    def shape(self):
+        return self.M.shape
+    def read(self, ego, by, clique_subset_size):
+        fname = join(kd.DATA_DIR, 'egofeaturesM', '%s_%s_%s.pkl'%(ego, by, clique_subset_size))
+        if os.path.exists(fname):
+            return pd.read_pickle(fname)
+        return None
+    def write(self, M, ego, by, clique_subset_size):
+        fname = join(kd.DATA_DIR, 'egofeaturesM', '%s_%s_%s.pkl'%(ego, by, clique_subset_size))
+        M.to_pickle(fname)
 
 def learn_number_clusters(ds, method='ap'):
     if method=='ap':
@@ -289,12 +311,11 @@ def create_features_by_edge2(ego, G, clique_subset_size=10):
         # from http://numpy-discussion.10968.n7.nabble.com/itertools-combinations-to-numpy-td16635.html
         for cliq_slice in np.fromiter(combinations(cliq, curr_css), dtype=dt, count=-1):        
             cliq_slice.sort()
-            #sample = '_'.join(map(str, cliq_slice))
             sample = tuple(cliq_slice)
             if sample not in m:
                 max_clique_len = max(max_clique_len, len(sample))
                 ncliques+=1
-                if ncliques%100000==0:
+                if ncliques%500000==0:
                     print 'Processed %s cliques'%ncliques
                 m[sample] = union_features2([featuremap[user] for user in cliq_slice])
                 cliq_slice = set(cliq_slice)
@@ -331,7 +352,7 @@ def create_features_by_edge2(ego, G, clique_subset_size=10):
     rows = {}
     Ms = []
     for idx,(key,row) in enumerate(iterM(m, max_clique_len)):
-        if idx%10000==0 and rows:
+        if idx%30000==0 and rows:
             M = createM(rows)
             print 'M.shape:', M.shape
             Ms.append(M)

@@ -79,7 +79,7 @@ def get_ego_cliques(ego):
             _write_cliques_file(zf, fileno, ego_cliques)
             ego_cliques = None
 
-    if ego==5881:
+    if False: #ego==5881:
         print 'In get_ego_cliques, skipping ego', ego
     else:
         print 'Loading cliques for ego:', ego
@@ -219,6 +219,69 @@ def plot_network_metrics():
     plt.tight_layout()    
     plt.show()
 
+def get_loss(rslts):
+    loss = pd.Series([r['loss'] for r in rslts.values()])
+    trivial_loss = pd.Series([r['trivial_loss'] for r in rslts.values()])
+    total_loss = loss.sum()
+    total_trivial_loss = trivial_loss.sum()
+    print 'loss=', total_loss, ', trivial_loss=', total_trivial_loss 
+    return total_loss,total_trivial_loss
+
+from operator import itemgetter
+def plot_loss(rslts, nk):
+    z = [(k, v['trivial_loss']-v['loss'], v['n_components'], v['n_samples']) 
+         for k,v in rslts.iteritems()]
+    z = sorted(z, key=itemgetter(3))
+    keys,lossdiff,n_components,n_samples = zip(*z)
+    plt.scatter(n_samples, lossdiff, np.power(n_components,2))
+    plt.xscale('log')
+    plt.axhline(y=0)
+    #plt.yscale('log')
+    #plt.plot(n_components, lossdiff)
+    #plt.xticks(range(len(x)), x, rotation=70)
+    for label, x, y in zip(keys, n_samples, lossdiff):
+        if y < -50:
+            plt.annotate(
+                label, 
+                xy=(x,y), xytext=(40, -20),
+                textcoords = 'offset points', ha = 'right', va = 'bottom',
+                #bbox = dict(boxstyle='round,pad=0.5', fc='yellow', alpha=0.2),
+                bbox = dict(boxstyle='square,pad=0.5', fc='yellow', alpha=0.2),
+                arrowprops = dict(arrowstyle='->', connectionstyle='arc3,rad=0')
+                )
+
+    total_loss, trivial_loss = get_loss(rslts)
+    diff_loss = trivial_loss-total_loss
+    plt.title(r'# of Samples vs Loss Differential (k=%s, total_loss_diff=%s)' % (nk,diff_loss))
+    plt.ylabel('Loss Differential')
+    plt.xlabel('# of Samples')
+    plt.show()
+
+def _get_comps(r):
+    z = [(k, v['trivial_loss']-v['loss'], v['n_components'], v['n_samples']) 
+         for k,v in r.iteritems()]
+    return z
+def compare_loss(r1,r2, lbl1, lbl2):
+    z1 = _get_comps(r1)
+    _keys,lossdiff1,_n_components,_n_samples = zip(*z1)
+    z2 = _get_comps(r2)
+    keys,lossdiff2,_n_components,_n_samples = zip(*z2)
+    
+    ego_stats = get_ego_cliques_mean_stats()
+    mean_ego_len = [ego_stats[ego]['mean'] for ego in keys]
+    
+    diffs = zip(keys, mean_ego_len, np.array(lossdiff2)-np.array(lossdiff1))
+    #diffs = zip(keys, _n_samples, np.array(lossdiff2)-np.array(lossdiff1))
+    diffs = sorted(diffs, key=itemgetter(1))
+    keys,_,diffs = zip(*diffs)
+    #print lossdiff1, lossdiff2, diffs
+
+    idx = range(len(keys))
+    plt.bar(idx, diffs, alpha=0.5, facecolor='red')
+    plt.xticks(idx, keys, rotation=70)
+    plt.grid(True)
+    plt.show()
+
 def save_results(label, rslts):
     fname = join(DATA_DIR, label+'.json')
     with open(fname, 'w') as fh:
@@ -237,6 +300,49 @@ class JSONContentEncoder(JSONEncoder):
             return list(obj)
         else:
             return obj
+
+def get_num_of_circles():
+    tc = training_circles()
+    return [(k, len(c.values())) for k,c in tc.iteritems()]    
+
+# def get_acc_as_series(rslts):
+#     return pd.Series([r['train_accuracy'] for r in rslts.values()])
+
+def get_comb_upper_bound(ego, k=20):
+    from scipy.misc import comb
+    return np.sum([max(1, comb(len(i),k)) for i in get_ego_cliques(ego)])
+
+_ego_cliques_mean_stats = None
+def get_ego_cliques_mean_stats():
+    
+    if _ego_cliques_mean_stats is not None:
+        return _ego_cliques_mean_stats
+    
+    fname = join(DATA_DIR, 'ego_cliques_lens.json')
+    if os.path.exists(fname):
+        cliq_facts = json.loads(open(fname, 'r').read())
+        # convert the keys to ints for convenience
+        _ego_cliques_mean_stats = dict([(int(k),v) for k,v in cliq_facts.iteritems()])
+        return _ego_cliques_mean_stats
+
+    cliq_facts = []
+    for ego in training_circles().keys():
+        lens = [len(ego_clique) for ego_clique in get_ego_cliques(ego)]
+        cliq_facts.append((ego, {'mean'   : np.mean(lens),
+                                 'median' : np.median(lens),
+                                 'max' : np.max(lens),
+                                 'std': np.std(lens),
+                                 'ptp': np.ptp(lens)
+                                 }))
+    
+    with open(fname, 'w') as fh:
+        fh.write(json.dumps(cliq_facts, ensure_ascii=False, 
+                            #cls=JSONContentEncoder, 
+                            indent=True))
+    _ego_cliques_mean_stats = dict(cliq_facts)
+    return _ego_cliques_mean_stats
+
+# Not used from below here...
 
 def analyze_features_for_ego(rslts, ego_ds):
     ego_rslts = rslts[ego_ds.ego]
@@ -301,26 +407,3 @@ def analyze_features(rslts):
     plt.subplots_adjust(left=0.525)
     #plt.tight_layout()    
     plt.show()
-    
-
-def get_num_of_circles():
-    tc = training_circles()
-    return [(k, len(c.values())) for k,c in tc.iteritems()]    
-#     tc = training_circles()
-#     def flatten(vals):
-#         allv = set()
-#         for v in vals:
-#             allv = allv.union(v)
-#         return allv
-#     #return [(ego, len(flatten(v.values()))) for ego,v in tc.iteritems()]
-#     return [(ego, len(flatten(v.values()))) for ego,v in tc.iteritems()]
-#     #return [(ego, len(set(v.values()))) for ego,v in tc.iteritems()]
-
-# def get_acc_as_series(rslts):
-#     return pd.Series([r['train_accuracy'] for r in rslts.values()])
-
-def get_loss(rslts):
-    loss = pd.Series([r['loss'] for r in rslts.values()])
-    trivial_loss = pd.Series([r['trivial_loss'] for r in rslts.values()])
-    print 'loss=', loss.sum(), ', trivial_loss=', trivial_loss.sum()
-    #return loss,trivial_loss
