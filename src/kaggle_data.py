@@ -224,16 +224,25 @@ def get_loss(rslts):
     trivial_loss = pd.Series([r['trivial_loss'] for r in rslts.values()])
     total_loss = loss.sum()
     total_trivial_loss = trivial_loss.sum()
-    print 'loss=', total_loss, ', trivial_loss=', total_trivial_loss 
+    print 'loss=', total_loss, ', trivial_loss=', total_trivial_loss, \
+        ', diff=', total_trivial_loss-total_loss
     return total_loss,total_trivial_loss
 
 from operator import itemgetter
 def plot_loss(rslts, nk):
-    z = [(k, v['trivial_loss']-v['loss'], v['n_components'], v['n_samples']) 
+    clique_info = get_ego_cliques_mean_stats()
+    z = [(k, 
+          v['trivial_loss']-v['loss'], 
+          v['n_components'], 
+          v['n_samples'], 
+          clique_info[k]['total']
+          ) 
          for k,v in rslts.iteritems()]
-    z = sorted(z, key=itemgetter(3))
-    keys,lossdiff,n_components,n_samples = zip(*z)
-    plt.scatter(n_samples, lossdiff, np.power(n_components,2))
+    #z = sorted(z, key=itemgetter(3))
+    #z = sorted(z, key=itemgetter(4))
+    keys,lossdiff,n_components,n_samples,n_cliques = zip(*z)
+    #plt.scatter(n_samples, lossdiff, np.power(n_components,2))
+    plt.scatter(n_cliques, lossdiff, np.power(n_components,2))
     plt.xscale('log')
     plt.axhline(y=0)
     #plt.yscale('log')
@@ -261,26 +270,75 @@ def _get_comps(r):
     z = [(k, v['trivial_loss']-v['loss'], v['n_components'], v['n_samples']) 
          for k,v in r.iteritems()]
     return z
-def compare_loss(r1,r2, lbl1, lbl2):
+def compare_loss(r1, r2, lbl1, lbl2):
     z1 = _get_comps(r1)
     _keys,lossdiff1,_n_components,_n_samples = zip(*z1)
     z2 = _get_comps(r2)
     keys,lossdiff2,_n_components,_n_samples = zip(*z2)
     
     ego_stats = get_ego_cliques_mean_stats()
-    mean_ego_len = [ego_stats[ego]['mean'] for ego in keys]
+    total_ego_len = [ego_stats[ego]['total'] for ego in keys]
     
-    diffs = zip(keys, mean_ego_len, np.array(lossdiff2)-np.array(lossdiff1))
+    non_triv_features = [len(r1[ego]['non_trivial_features'])**2 for ego in keys]
+    
+    diffs = zip(keys, total_ego_len, lossdiff1, lossdiff2, 
+                np.array(lossdiff1)-np.array(lossdiff2),
+                non_triv_features
+                )
     #diffs = zip(keys, _n_samples, np.array(lossdiff2)-np.array(lossdiff1))
     diffs = sorted(diffs, key=itemgetter(1))
-    keys,_,diffs = zip(*diffs)
+    keys,total_cliques,l1,l2,diffs,non_triv_features = zip(*diffs)
     #print lossdiff1, lossdiff2, diffs
 
-    idx = range(len(keys))
-    plt.bar(idx, diffs, alpha=0.5, facecolor='red')
-    plt.xticks(idx, keys, rotation=70)
+    idx = np.arange(len(keys))
+    #x = zip(l1, l2)
+    plt.close('all')
+    fig, ax1 = plt.subplots()
+    width = .35
+    rects1 = ax1.bar(idx, l1, width, color='r') #, yerr=menStd
+    rects2 = ax1.bar(idx+width, l2, width, color='y')
+    
+    line1, = ax1.plot(idx+width, diffs)
+    
+#     cliques = np.log([get_comb_upper_bound(ego, 10) for ego in keys])
+#     #cliques = [get_comb_upper_bound(ego, 10) for ego in keys]
+#     ax1.plot(idx+width, cliques, linestyle='-', color='r')
+
+    line2, = ax1.plot(idx+width, non_triv_features, linestyle='-', color='r')
+    
+#     ax2 = ax1.twinx()
+#     ax2.plot(idx, total_cliques, linestyle='-', marker='o', )
+#     ax2.set_yscale('log')
+#     ax2.set_ylabel('# of Cliques')
+    #ax2.get_xaxis().set_ticks([])
+    
+    #plt.bar(idx, x, alpha=0.5, facecolor='red')
+    ax1.legend((rects1[0], rects2[0], line1, line2), 
+               (lbl1+' (A)', lbl2+' (B)', 'A-B', 'Number of features (squared)'), loc=3)
+    ax1.set_xticks(idx+width)
+    ax1.set_xticklabels(keys)
+    
+    #align_yaxis(ax1, 0, ax2, 0)
+    
+    #ax.axis["bottom"].major_ticklabels.set_rotation(70)
+    labels = ax1.get_xticklabels() 
+    for label in labels: 
+        label.set_rotation(70)  
+    #plt.xticks(idx, keys, rotation=70)
     plt.grid(True)
     plt.show()
+
+def align_yaxis(ax1, v1, ax2, v2):
+    """
+    http://stackoverflow.com/questions/10481990/matplotlib-axis-with-two-scales-shared-origin
+    adjust ax2 ylimit so that v2 in ax2 is aligned to v1 in ax1
+    """
+    _, y1 = ax1.transData.transform((0, v1))
+    _, y2 = ax2.transData.transform((0, v2))
+    inv = ax2.transData.inverted()
+    _, dy = inv.transform((0, 0)) - inv.transform((0, y1-y2))
+    miny, maxy = ax2.get_ylim()
+    ax2.set_ylim(miny+dy, maxy+dy)
 
 def save_results(label, rslts):
     fname = join(DATA_DIR, label+'.json')
@@ -314,7 +372,7 @@ def get_comb_upper_bound(ego, k=20):
 
 _ego_cliques_mean_stats = None
 def get_ego_cliques_mean_stats():
-    
+    global _ego_cliques_mean_stats
     if _ego_cliques_mean_stats is not None:
         return _ego_cliques_mean_stats
     
@@ -322,7 +380,7 @@ def get_ego_cliques_mean_stats():
     if os.path.exists(fname):
         cliq_facts = json.loads(open(fname, 'r').read())
         # convert the keys to ints for convenience
-        _ego_cliques_mean_stats = dict([(int(k),v) for k,v in cliq_facts.iteritems()])
+        _ego_cliques_mean_stats = dict([(int(f[0]),f[1]) for f in cliq_facts])
         return _ego_cliques_mean_stats
 
     cliq_facts = []
@@ -342,7 +400,26 @@ def get_ego_cliques_mean_stats():
     _ego_cliques_mean_stats = dict(cliq_facts)
     return _ego_cliques_mean_stats
 
+# def reload_from_ecl(ecl):
+#     cliq_facts = []
+#     for ego, lens in ecl.iteritems():
+#         #lens = [len(ego_clique) for ego_clique in cliques]
+#         cliq_facts.append((ego, {'mean'   : np.mean(lens),
+#                                  'median' : np.median(lens),
+#                                  'max' : np.max(lens),
+#                                  'std': np.std(lens),
+#                                  'ptp': np.ptp(lens),
+#                                  'total' : len(lens)
+#                                  }))
+#     fname = join(DATA_DIR, 'ego_cliques_lens.json')
+#     with open(fname, 'w') as fh:
+#         fh.write(json.dumps(cliq_facts, ensure_ascii=False, 
+#                             #cls=JSONContentEncoder, 
+#                             indent=True))    
+
+#############################################################################
 # Not used from below here...
+#############################################################################
 
 def analyze_features_for_ego(rslts, ego_ds):
     ego_rslts = rslts[ego_ds.ego]
