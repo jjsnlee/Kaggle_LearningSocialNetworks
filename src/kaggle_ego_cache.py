@@ -8,4 +8,4 @@ def get_ego(ego, by='edge', clique_subset_size=10):
         _egocache[key] = EgoDataSet(ego, by=by, clique_subset_size=clique_subset_size)
     return _egocache[key]
 
- 
+

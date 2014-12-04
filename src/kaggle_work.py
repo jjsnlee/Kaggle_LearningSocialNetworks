@@ -5,7 +5,7 @@ import kaggle_data as kd
 import os
 from os.path import join
 #import re
-import socialCircles_metric as evaler
+from ext import socialCircles_metric as evaler
 
 def train(ds, method='gmm', covar_type='diag', include_model=False, 
           uf=False,
@@ -296,9 +296,9 @@ def create_features_by_edge2(ego, G, clique_subset_size=10):
     thresh = 0 
     comb_upper_bound = kd.get_comb_upper_bound(ego, clique_subset_size)
     if comb_upper_bound > 1e8:
-        print 'Skipping ego, due to upper bound of %.2fM combinations.' \
-            % (comb_upper_bound/1e6)
-        return
+        raise Exception('Skipping ego, due to upper bound of %.2fM combinations.' \
+            % (comb_upper_bound/1e6))
+
     elif comb_upper_bound > 1e4:
         thresh = 1e4/comb_upper_bound
         print 'Will use threshold of [%.4f] to downsample, due to upper bound of %.2fM combinations.' \
@@ -421,6 +421,7 @@ def main(method='gmm', by='edge2', verbose=False, feature_threshhold=20,
          clique_subset_size=10, 
          size_cutoff=200,
          uf=None, refresh=True, egofilter=None): #uf=uniq_features, 
+    
     print 'Starting:', get_ts(), 'using', method, ', by:', by
     rslts = {}
     egocircles = kd.training_circles().keys()
@@ -538,7 +539,7 @@ uniq_features = {'birthday',
  'work;start_date'}
 
 def create_dumb_data(ego_ds):
-    """OK this works perfectly, as expected..."""
+    """OK this works perfectly...as expected"""
     X = {}
     features = ego_ds.M.columns
     for idx in ego_ds.samples:
