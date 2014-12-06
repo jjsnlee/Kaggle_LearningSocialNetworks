@@ -7,6 +7,66 @@ from os.path import join
 #import re
 from ext import socialCircles_metric as evaler
 
+from IPython.core.debugger import Tracer
+
+def main(method='gmm', by='edge', verbose=False, feature_threshhold=20,
+         clique_subset_size=10, 
+         size_cutoff=200,
+         uf=None, refresh=True, egofilter=None):
+    
+    print 'Starting:', get_ts(), 'using', method, ', by:', by
+    rslts = {}
+    egocircles = kd.training_circles().keys()
+    import kaggle_ego_cache as kec
+    if refresh:
+        kec._egocache={}
+    
+    if egofilter:
+        if isinstance(egofilter, list):
+            egocircles = [ec for ec in egocircles if ec in egofilter]
+        else:
+            egocircles = filter(egofilter, egocircles)
+        print 'As a result of the filter, will just do', egocircles
+    
+    clique_info = kd.get_ego_cliques_mean_stats()
+    egocircles.sort()
+    total_loss = total_trivial_loss = 0
+    print '# egocircles:', len(egocircles)
+    for i, ego in enumerate(egocircles):
+        print '-'*80
+        print 'Executing for %s (#%s)' %(ego, i)
+        
+        if clique_info[ego]['total']>=size_cutoff:
+            print 'Skipping ego [%s], which has %s cliques.' % (ego, clique_info[ego]['total'])
+            continue
+
+        try:
+            #ds = kec.get_ego(ego, by=by, clique_subset_size=clique_subset_size)
+            ds = EgoDataSet(ego, by=by, clique_subset_size=clique_subset_size)
+            print 'Initialized ego'
+#             from sklearn.grid_search import GridSearchCV
+#             logistic = linear_model.LogisticRegression()
+#             pca = decomposition.PCA()
+#             pipe = Pipeline(steps=[('pca', pca), ('logistic', logistic)])
+#             estimator = GridSearchCV(pipe, {}
+#                                      #dict(pca__n_components=n_components, logistic__C=Cs)
+#                                      )
+            rslts[ego] = train(ds, method, uf=uf, 
+                               verbose=verbose, 
+                               feature_threshhold=feature_threshhold)
+            total_loss += rslts[ego]['loss']
+            total_trivial_loss += rslts[ego]['trivial_loss']
+        except Exception as e:
+            import traceback
+            st = traceback.format_exc()
+            print 'Problem running [%s]:\n%s' % (ego, st)
+
+    print 'For ft=%s css=%s sc=%s' % (feature_threshhold, clique_subset_size, size_cutoff)
+    print 'Total loss:', total_loss
+    print 'Total Trivial loss:', total_trivial_loss
+    print 'Done:', get_ts()
+    return rslts
+
 def train(ds, method='gmm', covar_type='diag', include_model=False, 
           uf=False,
           feature_threshhold=20,
@@ -190,22 +250,28 @@ def eval_model(ds, circle_rslts):
 #     egofilter=lambda x:x not in [9947,3735,23299,18005,15672,1357,5881,12800,26492,345,3059,4829,16203])
 
 class EgoDataSet():
-    def __init__(self, ego, by='edge2', clique_subset_size=10):
+    def __init__(self, ego, by='edge', clique_subset_size=10):
         self.ego = ego
         G = kd.load_ego_graph(ego)
         self.G = G
         
-        assert by in ('node', 'edge2')
+        assert by in ('node', 'edge', 'adj')
         connected_cmps = len(list(nx.connected_components(G)))
         
         #M = self.read(ego, by, clique_subset_size)
         M = None
         if M is None:
+            write_to_file = True
             if by == 'node':
                 M = create_features_by_node(ego, G)
-            elif by == 'edge2':
-                M = create_features_by_edge2(ego, G, clique_subset_size)
-            self.write(M, ego, by, clique_subset_size)
+            elif by == 'edge':
+                M = create_features_by_edge(ego, G, clique_subset_size)
+            elif by=='adj':
+                M = nx.to_numpy_matrix(G)
+                write_to_file = False
+            
+            if write_to_file:
+                self.write(M, ego, by, clique_subset_size)
             
         #print 'generated features...'
         circles = _get_circles(ego, set(M.index))
@@ -282,7 +348,7 @@ def learn_number_clusters(ds, method='ap'):
         X = model.fit_transform(ds.M)
         return X
 
-def create_features_by_edge2(ego, G, clique_subset_size=10):
+def create_features_by_edge(ego, G, clique_subset_size=10):
     print 'About to generate cliques'
     from itertools import combinations
 
@@ -404,6 +470,9 @@ def _get_circles(ego, all_friends_edges, raw_circles=None):
     overlaps = defaultdict(int)
     emptyset = frozenset()
     print 'Checking circles'
+
+    Tracer()()
+    
     circles = {}
     for users in all_friends_edges:
         user_edge_circles = [raw_circles.get(u, emptyset) for u in users]
@@ -417,69 +486,15 @@ def _get_circles(ego, all_friends_edges, raw_circles=None):
     print 'overlaps:', overlaps
     return circles
 
-def main(method='gmm', by='edge2', verbose=False, feature_threshhold=20,
-         clique_subset_size=10, 
-         size_cutoff=200,
-         uf=None, refresh=True, egofilter=None): #uf=uniq_features, 
-    
-    print 'Starting:', get_ts(), 'using', method, ', by:', by
-    rslts = {}
-    egocircles = kd.training_circles().keys()
-    import kaggle_ego_cache as kec
-    if refresh:
-        kec._egocache={}
-    
-    if egofilter:
-        if isinstance(egofilter, list):
-            egocircles = [ec for ec in egocircles if ec in egofilter]
-        else:
-            egocircles = filter(egofilter, egocircles)
-        print 'As a result of the filter, will just do', egocircles
-    
-    clique_info = kd.get_ego_cliques_mean_stats()
-    egocircles.sort()
-    total_loss = total_trivial_loss = 0
-    print '# egocircles:', len(egocircles)
-    for i, ego in enumerate(egocircles):
-        print '-'*80
-        print 'Executing for %s (#%s)' %(ego, i)
-        
-        if clique_info[ego]['total']>=size_cutoff:
-            print 'Skipping ego [%s], which has %s cliques.' % (ego, clique_info[ego]['total'])
-            continue
-        try:
-            #ds = kec.get_ego(ego, by=by, clique_subset_size=clique_subset_size)
-            ds = EgoDataSet(ego, by=by, clique_subset_size=clique_subset_size)
-            print 'Initialized ego'
-#             from sklearn.grid_search import GridSearchCV
-#             logistic = linear_model.LogisticRegression()
-#             pca = decomposition.PCA()
-#             pipe = Pipeline(steps=[('pca', pca), ('logistic', logistic)])
-#             estimator = GridSearchCV(pipe, {}
-#                                      #dict(pca__n_components=n_components, logistic__C=Cs)
-#                                      )
-            rslts[ego] = train(ds, method, uf=uf, 
-                               verbose=verbose, 
-                               feature_threshhold=feature_threshhold)
-            total_loss += rslts[ego]['loss']
-            total_trivial_loss += rslts[ego]['trivial_loss']
-        except Exception as e:
-            import traceback
-            st = traceback.format_exc()
-            print 'Problem running [%s]:\n%s' % (ego, st)
-
-    print 'For ft=%s css=%s sc=%s' % (feature_threshhold, clique_subset_size, size_cutoff)
-    print 'Total loss:', total_loss
-    print 'Total Trivial loss:', total_trivial_loss
-    print 'Done:', get_ts()
-    return rslts
-
 # def learn_labels(ego):
 #     X = ego.M
 #     labels = ego.targets
 #     from sklearn.semi_supervised import label_propagation
 #     label_spread = label_propagation.LabelSpreading(kernel='knn', alpha=1.0)
 #     label_spread.fit(X, labels)
+
+def create_adj_matrix(ego, G):
+    pass
 
 def create_features_by_node(ego, G):
     """
